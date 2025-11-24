@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Object Distance Scanner</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #000;
+            color: white;
+            overflow: hidden;
+            height: 100vh;
+        }
+        
+        .container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror front camera */
+        }
+        
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            z-index: 100;
+        }
+        
+        button {
+            background: #007AFF;
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            margin: 0 10px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3);
+        }
+        
+        button:hover {
+            background: #0056CC;
+            transform: scale(1.05);
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            font-size: 18px;
+            font-weight: 600;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .info-panel {
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 12px;
+            max-width: 300px;
+            backdrop-filter: blur(10px);
+            border: 1px solid #333;
+        }
+        
+        .object-box {
+            position: absolute;
+            border: 2px solid #00FF88;
+            background: rgba(0, 255, 136, 0.1);
+            pointer-events: none;
+            z-index: 50;
+        }
+        
+        .object-label {
+            position: absolute;
+            background: #00FF88;
+            color: #000;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-weight: bold;
+            border-radius: 4px;
+            white-space: nowrap;
+            pointer-events: none;
+            z-index: 51;
+        }
+        
+        .distance-ring {
+            position: absolute;
+            border: 2px solid #FF6B6B;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 40;
+        }
+        
+        .stats {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #ccc;
+        }
+        
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .spinner {
+            border: 3px solid #333;
+            border-top: 3px solid #007AFF;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+        <div class="overlay" id="overlay"></div>
+        
+        <div class="status" id="status">AI OBJECT SCANNER - TAP START</div>
+        
+        <div class="info-panel" id="infoPanel" style="display: none;">
+            <h3>📡 Object Detection</h3>
+            <div id="objectList">No objects detected</div>
+            <div class="stats" id="stats">
+                Objects: 0<br>
+                FPS: 0<br>
+                AI Model: Loading...
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn" onclick="startScanner()">START SCANNER</button>
+            <button id="stopBtn" onclick="stopScanner()" disabled>STOP SCANNER</button>
+            <button id="modeBtn" onclick="toggleMode()">MODE: DISTANCE</button>
+        </div>
+        
+        <div class="loading" id="loading" style="display: none;">
+            <div class="spinner"></div>
+            <div>Loading AI Model...</div>
+            <div style="font-size: 12px; margin-top: 10px; color: #ccc;">
+                This may take a moment<br>
+                Downloading object recognition AI
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    
+    <script>
+        // Global variables
+        let video = document.getElementById('video');
+        let canvas = document.getElementById('canvas');
+        let ctx = canvas.getContext('2d');
+        let overlay = document.getElementById('overlay');
+        let stream = null;
+        let animationId = null;
+        let model = null;
+        let isDistanceMode = true;
+        let lastDetectionTime = 0;
+        let frameCount = 0;
+        let fps = 0;
+        let lastFpsUpdate = 0;
+        
+        // Common objects with approximate sizes for distance calculation
+        const objectSizes = {
+            'person': { width: 0.5, height: 1.7 }, // meters
+            'cell phone': { width: 0.08, height: 0.16 },
+            'cup': { width: 0.08, height: 0.1 },
+            'book': { width: 0.15, height: 0.22 },
+            'bottle': { width: 0.07, height: 0.25 },
+            'chair': { width: 0.4, height: 0.9 },
+            'dining table': { width: 0.9, height: 0.75 },
+            'tv': { width: 0.8, height: 0.5 },
+            'laptop': { width: 0.3, height: 0.2 },
+            'mouse': { width: 0.1, height: 0.05 },
+            'keyboard': { width: 0.45, height: 0.15 },
+            'car': { width: 1.8, height: 1.5 },
+            'truck': { width: 2.5, height: 2.0 },
+            'bus': { width: 2.5, height: 3.0 },
+            'cat': { width: 0.25, height: 0.3 },
+            'dog': { width: 0.4, height: 0.5 },
+            'default': { width: 0.3, height: 0.3 }
+        };
+        
+        // Set canvas size
+        function setCanvasSize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        // Calculate distance using object size and apparent size in image
+        function calculateDistance(object, bbox) {
+            const knownSize = objectSizes[object] || objectSizes['default'];
+            const bboxWidth = bbox[2] - bbox[0];
+            const bboxHeight = bbox[3] - bbox[1];
+            
+            // Convert pixel size to apparent size in meters at 1 meter distance
+            const focalLength = 1000; // Approximate focal length in pixels
+            const apparentWidth = bboxWidth / focalLength;
+            const apparentHeight = bboxHeight / focalLength;
+            
+            // Calculate distance using both dimensions and take average
+            const distanceFromWidth = knownSize.width / apparentWidth;
+            const distanceFromHeight = knownSize.height / apparentHeight;
+            
+            let distance = (distanceFromWidth + distanceFromHeight) / 2;
+            
+            // Add some intelligent adjustments based on object type
+            if (object === 'person') {
+                // People are usually standing, so height is more reliable
+                distance = distanceFromHeight * 0.7 + distanceFromWidth * 0.3;
+            } else if (object === 'cell phone' || object === 'book') {
+                // These are usually held close
+                distance = Math.min(distance, 2.0);
+            }
+            
+            // Ensure reasonable limits
+            return Math.max(0.1, Math.min(20.0, distance));
+        }
+        
+        // Get distance category
+        function getDistanceCategory(distance) {
+            if (distance < 0.5) return 'VERY CLOSE';
+            if (distance < 1.0) return 'CLOSE';
+            if (distance < 3.0) return 'NEARBY';
+            if (distance < 7.0) return 'FAR';
+            return 'VERY FAR';
+        }
+        
+        // Get color based on distance
+        function getDistanceColor(distance) {
+            if (distance < 0.5) return '#FF4444'; // Red - very close
+            if (distance < 1.0) return '#FFAA00'; // Orange - close
+            if (distance < 3.0) return '#00FF88'; // Green - nearby
+            if (distance < 7.0) return '#4488FF'; // Blue - far
+            return '#8888FF'; // Purple - very far
+        }
+        
+        // Draw object detection results
+        function drawDetections(predictions) {
+            // Clear previous drawings
+            overlay.innerHTML = '';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            let objectListHTML = '';
+            let totalObjects = 0;
+            
+            predictions.forEach(prediction => {
+                const [x, y, width, height] = prediction.bbox;
+                const object = prediction.class;
+                const score = prediction.score;
+                
+                if (score > 0.5) { // Only show confident detections
+                    totalObjects++;
+                    
+                    // Calculate distance
+                    const distance = calculateDistance(object, [x, y, x + width, y + height]);
+                    const distanceCategory = getDistanceCategory(distance);
+                    const color = getDistanceColor(distance);
+                    
+                    // Draw bounding box
+                    const box = document.createElement('div');
+                    box.className = 'object-box';
+                    box.style.left = x + 'px';
+                    box.style.top = y + 'px';
+                    box.style.width = width + 'px';
+                    box.style.height = height + 'px';
+                    box.style.borderColor = color;
+                    box.style.background = color.replace(')', ', 0.1)').replace('rgb', 'rgba');
+                    overlay.appendChild(box);
+                    
+                    // Draw label
+                    const label = document.createElement('div');
+                    label.className = 'object-label';
+                    label.style.left = x + 'px';
+                    label.style.top = (y - 25) + 'px';
+                    label.style.background = color;
+                    label.innerHTML = `${object} (${distance.toFixed(1)}m)`;
+                    overlay.appendChild(label);
+                    
+                    // Draw distance rings in distance mode
+                    if (isDistanceMode) {
+                        const ringSize = Math.min(width, height) * 2;
+                        const ring = document.createElement('div');
+                        ring.className = 'distance-ring';
+                        ring.style.left = (x + width/2 - ringSize/2) + 'px';
+                        ring.style.top = (y + height/2 - ringSize/2) + 'px';
+                        ring.style.width = ringSize + 'px';
+                        ring.style.height = ringSize + 'px';
+                        ring.style.borderColor = color;
+                        overlay.appendChild(ring);
+                    }
+                    
+                    // Add to object list
+                    objectListHTML += `
+                        <div style="margin: 5px 0; padding: 5px; background: rgba(255,255,255,0.1); border-radius: 5px;">
+                            <strong>${object}</strong><br>
+                            Distance: <span style="color: ${color}">${distance.toFixed(1)}m</span><br>
+                            <small>${distanceCategory} • ${(score * 100).toFixed(0)}% confident</small>
+                        </div>
+                    `;
+                }
+            });
+            
+            // Update object list
+            const objectList = document.getElementById('objectList');
+            objectList.innerHTML = objectListHTML || 'No objects detected';
+            
+            // Update stats
+            const stats = document.getElementById('stats');
+            stats.innerHTML = `
+                Objects: ${totalObjects}<br>
+                FPS: ${fps}<br>
+                AI Model: COCO-SSD<br>
+                Mode: ${isDistanceMode ? 'Distance' : 'Detection'}
+            `;
+            
+            document.getElementById('infoPanel').style.display = 'block';
+        }
+        
+        // Process video frame with AI
+        async function processFrame() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA && model) {
+                // Calculate FPS
+                frameCount++;
+                const now = performance.now();
+                if (now - lastFpsUpdate >= 1000) {
+                    fps = Math.round((frameCount * 1000) / (now - lastFpsUpdate));
+                    frameCount = 0;
+                    lastFpsUpdate = now;
+                }
+                
+                // Run object detection every 500ms to avoid overloading
+                if (now - lastDetectionTime >= 500) {
+                    try {
+                        const predictions = await model.detect(video);
+                        drawDetections(predictions);
+                        lastDetectionTime = now;
+                    } catch (error) {
+                        console.error('Detection error:', error);
+                    }
+                }
+            }
+            
+            animationId = requestAnimationFrame(processFrame);
+        }
+        
+        // Load AI model
+        async function loadModel() {
+            try {
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('status').textContent = 'LOADING AI MODEL...';
+                
+                // Load COCO-SSD model for object detection
+                model = await cocoSsd.load();
+                
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('status').textContent = 'AI MODEL LOADED - READY TO SCAN';
+                
+                console.log('AI Model loaded successfully');
+                
+            } catch (error) {
+                console.error('Error loading model:', error);
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('status').textContent = 'AI MODEL FAILED TO LOAD';
+            }
+        }
+        
+        // Start scanner
+        async function startScanner() {
+            try {
+                document.getElementById('status').textContent = 'STARTING CAMERA...';
+                
+                // Load AI model if not already loaded
+                if (!model) {
+                    await loadModel();
+                }
+                
+                // Start camera
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'environment', // Use back camera for better object detection
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    } 
+                });
+                
+                video.srcObject = stream;
+                
+                setCanvasSize();
+                
+                video.onloadedmetadata = () => {
+                    document.getElementById('status').textContent = 'SCANNING FOR OBJECTS...';
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('stopBtn').disabled = false;
+                    processFrame();
+                };
+                
+            } catch (err) {
+                console.error('Error starting scanner:', err);
+                document.getElementById('status').textContent = 'ERROR: ' + err.message;
+            }
+        }
+        
+        // Stop scanner
+        function stopScanner() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            
+            // Clear overlay
+            overlay.innerHTML = '';
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            document.getElementById('status').textContent = 'SCANNER STOPPED';
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('infoPanel').style.display = 'none';
+        }
+        
+        // Toggle between distance and detection mode
+        function toggleMode() {
+            isDistanceMode = !isDistanceMode;
+            const btn = document.getElementById('modeBtn');
+            btn.textContent = isDistanceMode ? 'MODE: DISTANCE' : 'MODE: DETECTION';
+            
+            document.getElementById('status').textContent = 
+                isDistanceMode ? 'DISTANCE MODE - Showing object distances' : 'DETECTION MODE - Object detection only';
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', setCanvasSize);
+        
+        // Initialize
+        setCanvasSize();
+        
+        // Add some helpful tips
+        setTimeout(() => {
+            if (!stream) {
+                document.getElementById('status').textContent = 'Tap START SCANNER - Point camera at objects to measure distance';
+            }
+        }, 3000);
+        
+        // Pre-load model when page loads
+        window.addEventListener('load', loadModel);
+        
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === ' ') { // Space bar to toggle start/stop
+                if (stream) {
+                    stopScanner();
+                } else {
+                    startScanner();
+                }
+            } else if (e.key === 'm' || e.key === 'M') { // M for mode
+                toggleMode();
+            }
+        });
+        
+        // Add touch instructions
+        console.log(`
+🎯 AI OBJECT DISTANCE SCANNER INSTRUCTIONS:
+1. Tap START SCANNER and allow camera access
+2. Point your camera at objects around you
+3. The AI will identify objects and estimate distances
+4. Colors indicate distance: Red=Close, Green=Medium, Blue=Far
+5. Use MODE button to toggle distance rings
+        `);
+    </script>
+</body>
+</html>
